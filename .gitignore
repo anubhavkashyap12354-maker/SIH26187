@@ -1,0 +1,115 @@
+# ===========================
+#  SIH26187 — .gitignore
+# ===========================
+
+# ─── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# ─── ML / Large Binary Artifacts ─────────────────────────
+*.onnx
+*.pt
+*.pth
+*.h5
+*.pkl
+*.joblib
+
+# ─── Video / Media ───────────────────────────────────────
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flv
+*.wmv
+*.m4v
+
+# ─── Node / Frontend ─────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.yarn/
+dist/
+.vite/
+*.local
+
+# ─── Environment & Secrets ───────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+*.secret
+secrets/
+
+# ─── IDE / Editor ────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# ─── OS ──────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ─── Docker ──────────────────────────────────────────────
+# (docker-compose.yml IS committed — only ignore transient artefacts)
+.docker/
+
+# ─── Logs & Temp ─────────────────────────────────────────
+logs/
+*.log
+*.tmp
+*.temp
+*.bak
+*.cache
+.cache/
+
+# ─── Test Coverage ───────────────────────────────────────
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/

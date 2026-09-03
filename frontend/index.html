@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BorderGuard AI - Border Surveillance Command Center (SIH26187)</title>
+  
+  <!-- TailwindCSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            tactical: {
+              950: '#030712',
+              900: '#0b0f19',
+              800: '#111827',
+              700: '#1f2937',
+              600: '#374151',
+              accent: '#10b981',
+              alert: '#ef4444',
+              warning: '#f59e0b',
+              hud: '#06b6d4'
+            }
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'Menlo', 'Monaco', 'Courier New', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React 18 & Babel for standalone zero-compilation execution -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    code, pre, .font-mono { font-family: 'JetBrains Mono', monospace; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #030712; }
+    ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #374151; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased selection:bg-red-500 selection:text-white min-h-screen">
+  <div id="root"></div>
+
+  <!-- React Application -->
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // --- Audio Warning Alarm Chime Generator (Web Audio API) ---
+    const playWarningChime = () => {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.18);
+
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start();
+        osc.stop(ctx.currentTime + 0.24);
+      } catch (e) {
+        console.warn('Audio chime blocked or unavailable:', e);
+      }
+    };
+
+    // --- Main Application Component ---
+    function App() {
+      const [isConnected, setIsConnected] = useState(false);
+      const [frameData, setFrameData] = useState(null);
+      const [metadata, setMetadata] = useState(null);
+      const [detections, setDetections] = useState([]);
+      const [alerts, setAlerts] = useState([]);
+      const [videoSource, setVideoSource] = useState('assets/test_border_feed.mp4');
+      const [confidenceThreshold, setConfidenceThreshold] = useState(0.45);
+      const [activeCamera, setActiveCamera] = useState('CAM-01');
+      const [totalBreaches, setTotalBreaches] = useState(0);
+      const [isMuted, setIsMuted] = useState(false);
+      const [selectedFilter, setSelectedFilter] = useState('ALL');
+
+      // Control Panel Modes State
+      const [inputTab, setInputTab] = useState('upload'); // 'upload' | 'webcam' | 'rtsp' | 'synthetic'
+      const [rtspUrl, setRtspUrl] = useState('rtsp://admin:password@192.168.1.100:554/stream1');
+      const [webcamIndex, setWebcamIndex] = useState('0');
+      const [selectedFile, setSelectedFile] = useState(null);
+      const [isUploading, setIsUploading] = useState(false);
+      const [uploadStatus, setUploadStatus] = useState(null);
+      const fileInputRef = useRef(null);
+
+      // MS Paint Style Drawing State
+      const [isDrawing, setIsDrawing] = useState(false);
+      const [drawTool, setDrawTool] = useState('box'); // 'box' | 'circle' | 'polygon' | 'freehand'
+      const [drawnPoints, setDrawnPoints] = useState([]);
+      const [isMouseDown, setIsMouseDown] = useState(false);
+      const [dragStart, setDragStart] = useState(null);
+      const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+      const [saveStatus, setSaveStatus] = useState(null);
+
+      const canvasRef = useRef(null);
+      const containerRef = useRef(null);
+      const socketRef = useRef(null);
+      const reconnectTimeoutRef = useRef(null);
+      const lastChimeRef = useRef(0);
+
+      const r4 = (n) => Math.round(n * 10000) / 10000;
+      const getBackendHost = () => window.location.hostname || 'localhost';
+      const getBackendHttp = () => `http://${getBackendHost()}:8000`;
+
+      const getNormalizedPos = (e) => {
+        if (!containerRef.current) return { x: 0, y: 0 };
+        const rect = containerRef.current.getBoundingClientRect();
+        const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+        return { x: r4(x), y: r4(y) };
+      };
+
+      // Connect to WebSocket /ws/stream
+      const connectWebSocket = useCallback(() => {
+        const wsUrl = `ws://${getBackendHost()}:8000/ws/stream`;
+        console.log('[WebSocket] Connecting to:', wsUrl);
+        const ws = new WebSocket(wsUrl);
+        socketRef.current = ws;
+
+        ws.onopen = () => {
+          console.log('[WebSocket] Connected successfully.');
+          setIsConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload.frame) setFrameData(payload.frame);
+            if (payload.metadata) setMetadata(payload.metadata);
+            if (payload.detections) setDetections(payload.detections);
+            if (payload.alerts && payload.alerts.length > 0) {
+              setAlerts((prev) => [...payload.alerts, ...prev].slice(0, 50));
+              setTotalBreaches((prev) => prev + payload.alerts.length);
+
+              if (!isMuted && Date.now() - lastChimeRef.current > 2000) {
+                lastChimeRef.current = Date.now();
+                playWarningChime();
+              }
+            }
+          } catch (err) {
+            console.error('[WebSocket] Parse Error:', err);
+          }
+        };
+
+        ws.onclose = () => {
+          setIsConnected(false);
+          reconnectTimeoutRef.current = setTimeout(connectWebSocket, 2000);
+        };
+
+        ws.onerror = () => {
+          ws.close();
+        };
+      }, [isMuted]);
+
+      useEffect(() => {
+        connectWebSocket();
+        return () => {
+          if (socketRef.current) socketRef.current.close();
+          if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        };
+      }, [connectWebSocket]);
+
+      const sendCommand = (cmd) => {
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify(cmd));
+        }
+      };
+
+      // Draw Video Frames & Overlays
+      useEffect(() => {
+        if (!canvasRef.current || !frameData) return;
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+
+        img.onload = () => {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          ctx.drawImage(img, 0, 0);
+
+          // 1. Draw Active Geofence Polygon
+          const currentZone = isDrawing && drawnPoints.length >= 3 
+            ? drawnPoints 
+            : (metadata?.restricted_zone || [[0.15, 0.35], [0.85, 0.35], [0.95, 0.90], [0.05, 0.90]]);
+
+          if (currentZone && currentZone.length >= 3) {
+            ctx.beginPath();
+            ctx.moveTo(currentZone[0][0] * canvas.width, currentZone[0][1] * canvas.height);
+            for (let i = 1; i < currentZone.length; i++) {
+              ctx.lineTo(currentZone[i][0] * canvas.width, currentZone[i][1] * canvas.height);
+            }
+            ctx.closePath();
+
+            ctx.strokeStyle = isDrawing ? 'rgba(6, 182, 212, 0.95)' : 'rgba(239, 68, 68, 0.9)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 6]);
+            ctx.stroke();
+
+            ctx.fillStyle = isDrawing ? 'rgba(6, 182, 212, 0.18)' : 'rgba(239, 68, 68, 0.16)';
+            ctx.fill();
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = isDrawing ? 'rgba(6, 182, 212, 0.95)' : 'rgba(239, 68, 68, 0.95)';
+            ctx.font = 'bold 11px JetBrains Mono, monospace';
+            const labelText = isDrawing 
+              ? `[DRAFTING ZONE (${drawTool.toUpperCase()} TOOL): ${drawnPoints.length} VERTICES]` 
+              : `EXCLUSION ZONE // ${metadata?.camera_id || activeCamera} [3.0s LOITER]`;
+            ctx.fillText(labelText, currentZone[0][0] * canvas.width + 10, currentZone[0][1] * canvas.height + 20);
+          }
+
+          // 2. Draw Tracked Bounding Boxes with Precise Alignment
+          detections.forEach((det) => {
+            const [x1, y1, x2, y2] = det.bbox;
+            const bw = x2 - x1;
+            const bh = y2 - y1;
+            const isCritical = det.threat_level === 'CRITICAL';
+            const isWarning = det.threat_level === 'WARNING' || det.in_restricted_zone;
+
+            const boxColor = isCritical ? '#ef4444' : isWarning ? '#f59e0b' : '#10b981';
+            const labelBg = isCritical ? 'rgba(239, 68, 68, 0.95)' : isWarning ? 'rgba(245, 158, 11, 0.95)' : 'rgba(16, 185, 129, 0.9)';
+
+            ctx.strokeStyle = boxColor;
+            ctx.lineWidth = isCritical ? 3 : 2;
+            ctx.strokeRect(x1, y1, bw, bh);
+
+            // Tactical Corner Brackets
+            const cLen = Math.min(14, bw / 4, bh / 4);
+            ctx.lineWidth = 3;
+            // Top-Left
+            ctx.beginPath();
+            ctx.moveTo(x1, y1 + cLen);
+            ctx.lineTo(x1, y1);
+            ctx.lineTo(x1 + cLen, y1);
+            ctx.stroke();
+            // Top-Right
+            ctx.beginPath();
+            ctx.moveTo(x2 - cLen, y1);
+            ctx.lineTo(x2, y1);
+            ctx.lineTo(x2, y1 + cLen);
+            ctx.stroke();
+
+            // Label Badge
+            let loiterSuffix = det.loiter_duration > 0 ? ` [${det.loiter_duration}s]` : '';
+            const tagText = `${det.track_id} | ${det.class_name.toUpperCase()} ${(det.confidence * 100).toFixed(0)}%${loiterSuffix}`;
+            ctx.font = 'bold 11px JetBrains Mono, monospace';
+            const textWidth = ctx.measureText(tagText).width;
+
+            ctx.fillStyle = labelBg;
+            ctx.fillRect(x1, Math.max(0, y1 - 22), textWidth + 12, 22);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(tagText, x1 + 6, Math.max(15, y1 - 6));
+          });
+
+          // Center Crosshair
+          const cw = canvas.width / 2;
+          const ch = canvas.height / 2;
+          ctx.strokeStyle = 'rgba(6, 182, 212, 0.2)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cw - 20, ch);
+          ctx.lineTo(cw + 20, ch);
+          ctx.moveTo(cw, ch - 20);
+          ctx.lineTo(cw, ch + 20);
+          ctx.stroke();
+        };
+
+        img.src = frameData;
+      }, [frameData, metadata, detections, isDrawing, drawnPoints, drawTool, activeCamera]);
+
+      // MS Paint Drag & Shape Handlers
+      const handleMouseDown = (e) => {
+        if (!isDrawing) return;
+        const pos = getNormalizedPos(e);
+        setIsMouseDown(true);
+        setDragStart(pos);
+
+        if (drawTool === 'box') {
+          // MS Paint Box tool: initial tiny rectangle
+          const box = [
+            [pos.x, pos.y],
+            [pos.x + 0.01, pos.y],
+            [pos.x + 0.01, pos.y + 0.01],
+            [pos.x, pos.y + 0.01]
+          ];
+          setDrawnPoints(box);
+        } else if (drawTool === 'polygon') {
+          setDrawnPoints((prev) => [...prev, [pos.x, pos.y]]);
+        } else if (drawTool === 'freehand') {
+          setDrawnPoints([[pos.x, pos.y]]);
+        }
+      };
+
+      const handleMouseMove = (e) => {
+        const pos = getNormalizedPos(e);
+        setMousePos(pos);
+
+        if (!isDrawing || !isMouseDown || !dragStart) return;
+
+        if (drawTool === 'box') {
+          // MS Paint Box Drag Rectangle
+          const x1 = Math.min(dragStart.x, pos.x);
+          const x2 = Math.max(dragStart.x, pos.x);
+          const y1 = Math.min(dragStart.y, pos.y);
+          const y2 = Math.max(dragStart.y, pos.y);
+          setDrawnPoints([
+            [x1, y1],
+            [x2, y1],
+            [x2, y2],
+            [x1, y2]
+          ]);
+        } else if (drawTool === 'circle') {
+          // MS Paint Circle/Oval Drag Radius
+          const cx = dragStart.x;
+          const cy = dragStart.y;
+          const radius = Math.max(Math.abs(pos.x - cx), Math.abs(pos.y - cy), 0.02);
+          const pts = [];
+          for (let i = 0; i < 16; i++) {
+            const angle = (i / 16) * (2 * Math.PI);
+            const px = r4(Math.max(0, Math.min(1, cx + Math.cos(angle) * radius)));
+            const py = r4(Math.max(0, Math.min(1, cy + Math.sin(angle) * radius)));
+            pts.push([px, py]);
+          }
+          setDrawnPoints(pts);
+        } else if (drawTool === 'freehand') {
+          setDrawnPoints((prev) => [...prev, [pos.x, pos.y]]);
+        }
+      };
+
+      const handleMouseUp = () => {
+        setIsMouseDown(false);
+      };
+
+      const handleSaveGeofence = async () => {
+        if (drawnPoints.length < 3) {
+          alert('Polygonal geofence requires at least 3 points.');
+          return;
+        }
+        setSaveStatus('saving');
+        try {
+          const res = await fetch(`${getBackendHttp()}/api/geofence`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ camera_id: activeCamera, polygon: drawnPoints })
+          });
+          if (res.ok) {
+            setSaveStatus('success');
+            setIsDrawing(false);
+            sendCommand({ geofence_polygon: drawnPoints, camera_id: activeCamera });
+            setTimeout(() => setSaveStatus(null), 3000);
+          } else {
+            alert('Failed to save geofence.');
+            setSaveStatus('error');
+          }
+        } catch (e) {
+          console.error(e);
+          setSaveStatus('error');
+        }
+      };
+
+      // Local Video File Upload Handler
+      const handleFileSelect = (file) => {
+        if (!file) return;
+        setSelectedFile(file);
+        setUploadStatus(null);
+      };
+
+      const handleUploadVideo = async () => {
+        if (!selectedFile || isUploading) return;
+        setIsUploading(true);
+        setUploadStatus(null);
+
+        try {
+          const formData = new FormData();
+          formData.append('file', selectedFile);
+
+          const res = await fetch(`${getBackendHttp()}/api/upload-video`, {
+            method: 'POST',
+            body: formData,
+          });
+
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.detail || 'Upload failed');
+
+          setUploadStatus({
+            type: 'success',
+            message: data.message || `Loaded '${selectedFile.name}' into AI pipeline.`,
+          });
+
+          if (data.video_source) {
+            setVideoSource(data.video_source);
+            sendCommand({ video_source: data.video_source, camera_id: activeCamera });
+          }
+        } catch (err) {
+          setUploadStatus({
+            type: 'error',
+            message: err.message || 'Could not reach backend at port 8000.',
+          });
+        } finally {
+          setIsUploading(false);
+        }
+      };
+
+      // Set stream source helper
+      const switchStreamSource = async (type, val) => {
+        try {
+          await fetch(`${getBackendHttp()}/api/stream-source`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source_type: type, source_value: val }),
+          }).catch(() => {});
+        } catch (e) {}
+
+        setVideoSource(val);
+        sendCommand({ video_source: val, camera_id: activeCamera });
+      };
+
+      const activeThreats = detections.filter((d) => d.threat_level === 'CRITICAL' || d.in_restricted_zone).length;
+      const criticalCount = alerts.filter((a) => a.severity === 'CRITICAL' || a.type === 'INTRUSION_ALERT').length;
+      const filteredAlerts = alerts.filter((a) => selectedFilter === 'ALL' || a.severity === 'CRITICAL' || a.type === 'INTRUSION_ALERT');
+
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+          {/* Top Command Header */}
+          <header className="bg-slate-950/95 border-b border-slate-800 px-6 py-3 sticky top-0 z-50 backdrop-blur-lg">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+              <div className="flex items-center gap-3.5">
+                <div className="relative p-2.5 bg-red-950/30 border border-red-500/40 rounded-xl text-red-400">
+                  <span className="w-2.5 h-2.5 bg-red-500 rounded-full inline-block animate-ping" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <h1 className="font-extrabold text-base tracking-widest text-slate-100 uppercase">
+                      BorderGuard <span className="text-red-500">Command</span>
+                    </h1>
+                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-slate-900 text-cyan-400 rounded border border-cyan-500/30">
+                      SIH26187
+                    </span>
+                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                      activeThreats > 0 ? 'bg-red-950/80 text-red-400 border-red-500/60 animate-pulse' : 'bg-emerald-950/60 text-emerald-400 border-emerald-500/40'
+                    }`}>
+                      {activeThreats > 0 ? `DEFCON 2 // ${activeThreats} ACTIVE BREACH` : 'PERIMETER SECURE'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 font-mono mt-0.5">
+                    Sector Alpha Autonomous Border Surveillance & Geofencing System
+                  </p>
+                </div>
+              </div>
+
+              {/* Telemetry Status */}
+              <div className="flex flex-wrap items-center gap-2.5 text-xs font-mono">
+                <div className="bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-300">
+                  <span className="text-slate-400">CAM: </span>
+                  <select
+                    value={activeCamera}
+                    onChange={(e) => {
+                      setActiveCamera(e.target.value);
+                      sendCommand({ camera_id: e.target.value });
+                    }}
+                    className="bg-transparent text-indigo-300 font-bold focus:outline-none cursor-pointer"
+                  >
+                    <option value="CAM-01" className="bg-slate-900 text-slate-200">CAM-01 (North Fence)</option>
+                    <option value="CAM-02" className="bg-slate-900 text-slate-200">CAM-02 (East River)</option>
+                    <option value="CAM-03" className="bg-slate-900 text-slate-200">CAM-03 (South Valley)</option>
+                  </select>
+                </div>
+
+                <div className="bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-300">
+                  <span className="text-slate-400">FPS: </span>
+                  <span className="font-bold text-emerald-400">{metadata?.fps || 15}</span>
+                </div>
+
+                <div className="bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-300">
+                  <span className="text-slate-400">LATENCY: </span>
+                  <span className="font-bold text-amber-400">{metadata?.latency_ms || 18}ms</span>
+                </div>
+
+                <div className={`px-3 py-1.5 rounded-lg border font-bold ${
+                  isConnected ? 'bg-emerald-950/50 text-emerald-400 border-emerald-500/40' : 'bg-red-950/50 text-red-400 border-red-500/40 animate-pulse'
+                }`}>
+                  {isConnected ? '● ONLINE' : '○ CONNECTING BACKEND...'}
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {!isConnected && (
+            <div className="bg-amber-950/90 border-b border-amber-500/50 px-6 py-2 text-xs font-mono text-amber-200 text-center flex items-center justify-center gap-2">
+              <span>⚠️ Connecting to backend Python server on port 8000... If offline, run:</span>
+              <code className="bg-slate-900 px-2 py-0.5 rounded text-emerald-300 border border-slate-700">.\start_backend.ps1</code>
+            </div>
+          )}
+
+          {/* Main Content Grid */}
+          <main className="flex-1 p-5 grid grid-cols-1 xl:grid-cols-12 gap-5 max-w-[1700px] mx-auto w-full">
+            {/* Left 8 Cols: Video Viewport & Geofence Drawer */}
+            <div className="xl:col-span-8 space-y-4 flex flex-col">
+              <div className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col">
+                {/* Viewport Top Toolbar with MS Paint Tools */}
+                <div className="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <span className="flex items-center gap-2 text-xs font-mono text-slate-300 font-bold">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                      OPTICAL FEED // {activeCamera}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                      {metadata?.resolution ? `${metadata.resolution[0]}x${metadata.resolution[1]}` : '640x480'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {!isDrawing ? (
+                      <button
+                        onClick={() => { setIsDrawing(true); setDrawTool('box'); setDrawnPoints([]); }}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-mono px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all shadow-[0_0_10px_rgba(16,185,129,0.3)]"
+                      >
+                        ✏️ DRAW GEOFENCE ZONE
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {/* MS Paint Shape Selectors */}
+                        <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs font-mono">
+                          <button
+                            onClick={() => { setDrawTool('box'); setDrawnPoints([]); }}
+                            className={`px-2.5 py-1 rounded font-bold transition-all ${
+                              drawTool === 'box' ? 'bg-cyan-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="Click & Drag Rectangle (MS Paint Box)"
+                          >
+                            📦 BOX TOOL
+                          </button>
+                          <button
+                            onClick={() => { setDrawTool('circle'); setDrawnPoints([]); }}
+                            className={`px-2.5 py-1 rounded font-bold transition-all ${
+                              drawTool === 'circle' ? 'bg-cyan-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="Click & Drag Circle"
+                          >
+                            ⭕ CIRCLE
+                          </button>
+                          <button
+                            onClick={() => { setDrawTool('polygon'); setDrawnPoints([]); }}
+                            className={`px-2.5 py-1 rounded font-bold transition-all ${
+                              drawTool === 'polygon' ? 'bg-cyan-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="Click Multi-Point Polygon"
+                          >
+                            📐 POLYGON
+                          </button>
+                          <button
+                            onClick={() => { setDrawTool('freehand'); setDrawnPoints([]); }}
+                            className={`px-2.5 py-1 rounded font-bold transition-all ${
+                              drawTool === 'freehand' ? 'bg-cyan-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="Freehand Pencil Tool"
+                          >
+                            🖐 FREEHAND
+                          </button>
+                        </div>
+
+                        <button
+                          onClick={() => setDrawnPoints([])}
+                          disabled={drawnPoints.length === 0}
+                          className="bg-slate-800 text-slate-300 text-xs font-mono px-2.5 py-1.5 rounded-lg border border-slate-700 disabled:opacity-50"
+                        >
+                          CLEAR
+                        </button>
+                        <button
+                          onClick={handleSaveGeofence}
+                          disabled={drawnPoints.length < 3 || saveStatus === 'saving'}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-mono px-3 py-1.5 rounded-lg font-bold disabled:opacity-50 shadow"
+                        >
+                          {saveStatus === 'saving' ? 'SAVING...' : '✓ SAVE ZONE'}
+                        </button>
+                        <button
+                          onClick={() => { setIsDrawing(false); setDrawnPoints([]); }}
+                          className="text-slate-400 hover:text-slate-200 text-xs font-mono px-2 py-1.5"
+                        >
+                          CANCEL
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Viewport Canvas with Drag Handlers */}
+                <div
+                  ref={containerRef}
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  className={`relative w-full aspect-[4/3] bg-slate-950 flex items-center justify-center select-none ${
+                    isDrawing ? 'cursor-crosshair' : 'cursor-default'
+                  }`}
+                >
+                  {frameData ? (
+                    <canvas ref={canvasRef} className="w-full h-full object-contain pointer-events-none" />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center text-slate-500 space-y-3 p-8">
+                      <div className="w-10 h-10 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                      <p className="font-mono text-sm font-semibold tracking-wider text-slate-300">ESTABLISHING RTSP INGESTION...</p>
+                      <p className="text-xs text-slate-500 font-mono">Subscribing to /ws/stream</p>
+                    </div>
+                  )}
+
+                  {/* SVG Handles Overlay */}
+                  {isDrawing && (
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none z-20">
+                      {drawnPoints.map((pt, i) => (
+                        <g key={i}>
+                          <circle cx={`${pt[0] * 100}%`} cy={`${pt[1] * 100}%`} r="5" className="fill-cyan-400 stroke-white stroke-2" />
+                        </g>
+                      ))}
+                    </svg>
+                  )}
+
+                  {/* Guide line & cursor overlay */}
+                  {isDrawing && (
+                    <div className="absolute bottom-3 left-3 bg-black/80 backdrop-blur-md px-3 py-1 rounded-lg border border-cyan-500/40 text-[11px] font-mono text-cyan-300 pointer-events-none">
+                      TOOL: {drawTool.toUpperCase()} | CURSOR: X: {mousePos.x.toFixed(3)} | Y: {mousePos.y.toFixed(3)}
+                    </div>
+                  )}
+                </div>
+
+                {/* Tactical Video Playback Controls Bar */}
+                <div className="px-4 py-2 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs font-mono select-none">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => sendCommand({ video_control: { action: 'toggle' } })}
+                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition-all shadow"
+                      title={metadata?.playback?.is_paused ? 'Play Video' : 'Pause Video'}
+                    >
+                      {metadata?.playback?.is_paused ? '▶ PLAY' : '❚❚ PAUSE'}
+                    </button>
+
+                    <button
+                      onClick={() => sendCommand({ video_control: { action: 'restart' } })}
+                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all border border-slate-700 text-[11px]"
+                      title="Restart Video (Jump to Start)"
+                    >
+                      ◼ RESTART
+                    </button>
+
+                    <button
+                      onClick={() => sendCommand({ video_control: { action: 'rewind' } })}
+                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold transition-all border border-slate-700 flex items-center gap-1 text-[11px]"
+                      title="Rewind 5 Seconds"
+                    >
+                      ↺ -5s
+                    </button>
+
+                    <button
+                      onClick={() => sendCommand({ video_control: { action: 'forward' } })}
+                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold transition-all border border-slate-700 flex items-center gap-1 text-[11px]"
+                      title="Fast Forward 5 Seconds"
+                    >
+                      +5s ↻
+                    </button>
+                  </div>
+
+                  {/* Interactive Timeline Scrubber */}
+                  <div className="flex-1 min-w-[180px] flex items-center gap-3">
+                    <span className="text-[11px] text-slate-400 font-bold min-w-[40px] text-right">
+                      {Math.floor((metadata?.playback?.current_sec || 0) / 60).toString().padStart(2, '0')}:
+                      {Math.floor((metadata?.playback?.current_sec || 0) % 60).toString().padStart(2, '0')}
+                    </span>
+
+                    <div
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                        sendCommand({ video_control: { action: 'seek_ratio', ratio } });
+                      }}
+                      className="flex-1 h-2.5 bg-slate-900 hover:bg-slate-800 rounded-full cursor-pointer relative overflow-hidden border border-slate-800"
+                      title="Click to Scrub Timeline"
+                    >
+                      <div
+                        className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 rounded-full transition-all duration-150"
+                        style={{ width: `${(metadata?.playback?.progress_ratio || 0) * 100}%` }}
+                      />
+                    </div>
+
+                    <span className="text-[11px] text-slate-400 font-bold min-w-[40px]">
+                      {Math.floor((metadata?.playback?.duration_sec || 0) / 60).toString().padStart(2, '0')}:
+                      {Math.floor((metadata?.playback?.duration_sec || 0) % 60).toString().padStart(2, '0')}
+                    </span>
+                  </div>
+
+                  {/* Playback Speed Selector */}
+                  <div className="flex items-center gap-1 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase mr-1">Speed:</span>
+                    {[0.5, 1.0, 1.5, 2.0].map((spd) => (
+                      <button
+                        key={spd}
+                        onClick={() => sendCommand({ video_control: { action: 'speed', speed: spd } })}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all ${
+                          metadata?.playback?.playback_speed === spd
+                            ? 'bg-cyan-600 text-white shadow'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {spd}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Metrics Grid */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between shadow">
+                  <div>
+                    <p className="text-[11px] font-mono text-slate-400 font-medium">TRACKED TARGETS</p>
+                    <p className="text-2xl font-bold font-mono text-cyan-400">{detections.length}</p>
+                    <p className="text-[10px] font-mono text-slate-500 mt-0.5">Persistent SORT IDs</p>
+                  </div>
+                </div>
+
+                <div className={`border rounded-xl p-3.5 flex items-center justify-between shadow ${
+                  activeThreats > 0 ? 'bg-red-950/60 border-red-500/60' : 'bg-slate-900/80 border-slate-800'
+                }`}>
+                  <div>
+                    <p className="text-[11px] font-mono text-slate-400 font-medium">ZONE BREACHES</p>
+                    <p className={`text-2xl font-bold font-mono ${activeThreats > 0 ? 'text-red-400 animate-pulse' : 'text-emerald-400'}`}>
+                      {activeThreats}
+                    </p>
+                    <p className="text-[10px] font-mono text-slate-500 mt-0.5">&ge; 3.0s Loiter Triggers</p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between shadow">
+                  <div>
+                    <p className="text-[11px] font-mono text-slate-400 font-medium">TOTAL INCIDENTS</p>
+                    <p className="text-2xl font-bold font-mono text-amber-400">{totalBreaches}</p>
+                    <p className="text-[10px] font-mono text-slate-500 mt-0.5">Session Cumulative</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Right 4 Cols: Controls & Threat Intelligence Panel */}
+            <div className="xl:col-span-4 space-y-4 flex flex-col">
+              {/* Surveillance Controls with 4 Input Modes */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-4">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <h3 className="font-extrabold text-sm text-slate-100 uppercase tracking-wider">
+                    Surveillance Input Console
+                  </h3>
+                  <span className="text-[10px] font-mono text-emerald-400 bg-slate-950 px-2 py-0.5 rounded border border-emerald-500/30 font-bold">
+                    4 INPUT MODES
+                  </span>
+                </div>
+
+                {/* Input Mode Tabs */}
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs font-mono">
+                  <button
+                    onClick={() => { setInputTab('upload'); setUploadStatus(null); }}
+                    className={`py-2 px-2.5 rounded-lg flex items-center justify-center gap-1 font-bold transition-all ${
+                      inputTab === 'upload' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    📁 UPLOAD VIDEO
+                  </button>
+                  <button
+                    onClick={() => { setInputTab('webcam'); setUploadStatus(null); }}
+                    className={`py-2 px-2.5 rounded-lg flex items-center justify-center gap-1 font-bold transition-all ${
+                      inputTab === 'webcam' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    🎥 WEBCAM
+                  </button>
+                  <button
+                    onClick={() => { setInputTab('rtsp'); setUploadStatus(null); }}
+                    className={`py-2 px-2.5 rounded-lg flex items-center justify-center gap-1 font-bold transition-all ${
+                      inputTab === 'rtsp' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    📡 CCTV RTSP
+                  </button>
+                  <button
+                    onClick={() => { setInputTab('synthetic'); setUploadStatus(null); }}
+                    className={`py-2 px-2.5 rounded-lg flex items-center justify-center gap-1 font-bold transition-all ${
+                      inputTab === 'synthetic' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    ⚡ TEST FEED
+                  </button>
+                </div>
+
+                {/* TAB 1: Local Video File Upload */}
+                {inputTab === 'upload' && (
+                  <div className="space-y-3 bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
+                    <label className="text-xs font-mono text-slate-300 font-semibold">
+                      📁 SELECT LOCAL DEVICE VIDEO (MP4, AVI, MOV, MKV)
+                    </label>
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      className="cursor-pointer border-2 border-dashed border-slate-700 hover:border-emerald-500 bg-slate-900 p-4 rounded-xl text-center transition-all"
+                    >
+                      <p className="text-xs font-mono text-slate-200 font-bold">
+                        {selectedFile ? `Selected: ${selectedFile.name}` : 'Click to select or Drag & Drop local video'}
+                      </p>
+                      <p className="text-[10px] font-mono text-slate-400 mt-1">
+                        {selectedFile ? `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB` : 'Supports MP4, AVI, MOV, MKV, WebM'}
+                      </p>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="video/*,.mp4,.avi,.mov,.mkv,.webm"
+                        className="hidden"
+                        onChange={(e) => handleFileSelect(e.target.files?.[0])}
+                      />
+                    </div>
+
+                    <button
+                      onClick={handleUploadVideo}
+                      disabled={!selectedFile || isUploading}
+                      className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-mono font-bold text-xs py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow"
+                    >
+                      {isUploading ? 'UPLOADING TO AI PIPELINE...' : '▶ LOAD VIDEO INTO PIPELINE'}
+                    </button>
+                  </div>
+                )}
+
+                {/* TAB 2: Live Webcam / USB Camera */}
+                {inputTab === 'webcam' && (
+                  <div className="space-y-3 bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
+                    <label className="text-xs font-mono text-slate-300 font-semibold">
+                      🎥 SELECT WEBCAM DEVICE
+                    </label>
+                    <select
+                      value={webcamIndex}
+                      onChange={(e) => setWebcamIndex(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-slate-100 focus:outline-none"
+                    >
+                      <option value="0">Camera 0 (Default Integrated Laptop Webcam)</option>
+                      <option value="1">Camera 1 (External USB / Thermal Camera)</option>
+                      <option value="2">Camera 2 (Secondary USB Camera)</option>
+                    </select>
+
+                    <button
+                      onClick={() => switchStreamSource('webcam', webcamIndex)}
+                      className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-mono font-bold text-xs py-2.5 px-4 rounded-xl transition-all shadow"
+                    >
+                      🎥 ACTIVATE WEBCAM FEED
+                    </button>
+                  </div>
+                )}
+
+                {/* TAB 3: Custom RTSP CCTV Stream */}
+                {inputTab === 'rtsp' && (
+                  <div className="space-y-3 bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
+                    <label className="text-xs font-mono text-slate-300 font-semibold">
+                      📡 INPUT CCTV RTSP STREAM URL
+                    </label>
+                    <input
+                      type="text"
+                      value={rtspUrl}
+                      onChange={(e) => setRtspUrl(e.target.value)}
+                      placeholder="rtsp://admin:password@192.168.1.100:554/stream1"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-amber-300 focus:outline-none placeholder:text-slate-600"
+                    />
+                    <button
+                      onClick={() => switchStreamSource('rtsp', rtspUrl.trim())}
+                      className="w-full bg-amber-600 hover:bg-amber-500 text-white font-mono font-bold text-xs py-2.5 px-4 rounded-xl transition-all shadow"
+                    >
+                      📡 CONNECT RTSP CCTV STREAM
+                    </button>
+                  </div>
+                )}
+
+                {/* TAB 4: Synthetic Border Patrol Simulation */}
+                {inputTab === 'synthetic' && (
+                  <div className="space-y-3 bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
+                    <p className="text-xs font-mono text-slate-300">
+                      Load the pre-generated 30s security camera test feed showing an intruder walking towards and loitering in sector alpha.
+                    </p>
+                    <button
+                      onClick={() => switchStreamSource('synthetic', 'assets/test_border_feed.mp4')}
+                      className="w-full bg-purple-600 hover:bg-purple-500 text-white font-mono font-bold text-xs py-2.5 px-4 rounded-xl transition-all shadow"
+                    >
+                      ⚡ LOAD TEST BORDER SECURITY FEED
+                    </button>
+                  </div>
+                )}
+
+                {/* Upload Status Banner */}
+                {uploadStatus && (
+                  <div className={`p-2.5 rounded-xl text-xs font-mono border ${
+                    uploadStatus.type === 'success' ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300' : 'bg-red-950/80 border-red-500/50 text-red-300'
+                  }`}>
+                    {uploadStatus.message}
+                  </div>
+                )}
+
+                {/* Active Source Indicator Badge */}
+                <div className="bg-slate-950 px-3 py-2 rounded-xl border border-slate-800 flex items-center justify-between text-[11px] font-mono">
+                  <span className="text-slate-400 font-medium">ACTIVE SOURCE:</span>
+                  <span className="text-cyan-300 font-bold truncate max-w-[200px]" title={videoSource}>
+                    {videoSource || 'None'}
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 pt-2 border-t border-slate-800">
+                  <div className="flex items-center justify-between text-xs font-mono text-slate-300">
+                    <span>AI CONFIDENCE THRESHOLD</span>
+                    <span className="text-emerald-400 font-bold">{(confidenceThreshold * 100).toFixed(0)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.10"
+                    max="0.95"
+                    step="0.05"
+                    value={confidenceThreshold}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setConfidenceThreshold(val);
+                      sendCommand({ confidence_threshold: val });
+                    }}
+                    className="w-full h-1.5 bg-slate-950 rounded-lg appearance-none cursor-pointer accent-emerald-400"
+                  />
+                </div>
+
+                <button
+                  onClick={() => {
+                    const defaultZone = [[0.15, 0.35], [0.85, 0.35], [0.95, 0.90], [0.05, 0.90]];
+                    sendCommand({ geofence_polygon: defaultZone, camera_id: activeCamera });
+                  }}
+                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-xl text-xs font-mono font-bold transition-colors border border-slate-700"
+                >
+                  ↺ RESET DEFAULT GEOFENCE
+                </button>
+              </div>
+
+              {/* Threat Intelligence Alert Log */}
+              <div className={`bg-slate-900 border rounded-2xl p-4 flex flex-col flex-1 shadow-2xl ${
+                criticalCount > 0 ? 'border-red-500/70' : 'border-slate-800'
+              }`}>
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                  <div>
+                    <h3 className="font-extrabold text-sm text-slate-100 uppercase tracking-wider">
+                      Threat Intelligence Log
+                    </h3>
+                    <p className="text-[11px] text-slate-400 font-mono">
+                      Spatial Loitering & Intrusion Events
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setIsMuted(!isMuted)}
+                      className="p-1.5 rounded-lg border text-xs font-mono bg-slate-800 text-slate-300 border-slate-700"
+                      title={isMuted ? 'Unmute siren' : 'Mute siren'}
+                    >
+                      {isMuted ? '🔇' : '🔊'}
+                    </button>
+                    {alerts.length > 0 && (
+                      <button
+                        onClick={() => setAlerts([])}
+                        className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-red-400 border border-slate-700"
+                        title="Clear logs"
+                      >
+                        🗑️
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Filter Tabs */}
+                <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 mt-3 text-xs font-mono">
+                  <button
+                    onClick={() => setSelectedFilter('ALL')}
+                    className={`flex-1 py-1 px-2 rounded font-medium ${selectedFilter === 'ALL' ? 'bg-slate-800 text-slate-100' : 'text-slate-400'}`}
+                  >
+                    ALL ({alerts.length})
+                  </button>
+                  <button
+                    onClick={() => setSelectedFilter('CRITICAL')}
+                    className={`flex-1 py-1 px-2 rounded font-medium ${selectedFilter === 'CRITICAL' ? 'bg-red-950 text-red-300 border border-red-500/50' : 'text-slate-400'}`}
+                  >
+                    CRITICAL ({criticalCount})
+                  </button>
+                </div>
+
+                {/* Alert Items */}
+                <div className="flex-1 overflow-y-auto space-y-3 mt-3 pr-1 min-h-[300px] max-h-[520px]">
+                  {filteredAlerts.length === 0 ? (
+                    <div className="h-48 flex flex-col items-center justify-center text-slate-500 space-y-2">
+                      <p className="text-xs font-mono font-semibold text-slate-400">ZERO INTRUSIONS RECORDED</p>
+                      <p className="text-[11px] text-slate-600">Loitering threshold set to 3.0s.</p>
+                    </div>
+                  ) : (
+                    filteredAlerts.map((alert, idx) => (
+                      <div
+                        key={alert.alert_id || alert.id || idx}
+                        className="p-3 rounded-xl border bg-red-950/40 border-red-500/50 space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-mono font-bold text-red-300">
+                            🚨 {alert.type || 'INTRUSION_ALERT'}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400">{alert.timestamp}</span>
+                        </div>
+                        <p className="text-xs text-slate-200 font-medium">{alert.message}</p>
+                        <div className="flex items-center gap-3 pt-1 border-t border-slate-800">
+                          {alert.snapshot_base64 && (
+                            <img
+                              src={alert.snapshot_base64}
+                              alt="Intruder Snapshot"
+                              className="w-14 h-14 object-cover rounded-lg border-2 border-red-500/70 bg-black shrink-0"
+                            />
+                          )}
+                          <div className="flex flex-wrap gap-1.5 text-[10px] font-mono text-slate-300">
+                            <span className="px-1.5 py-0.5 bg-red-900/70 text-red-200 rounded font-bold">
+                              ID: {alert.target_id || alert.object_type}
+                            </span>
+                            {alert.loiter_duration_seconds !== undefined && (
+                              <span className="px-1.5 py-0.5 bg-amber-950 text-amber-300 rounded font-bold">
+                                ⏱️ {alert.loiter_duration_seconds}s LOITER
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </main>
+
+          {/* Footer */}
+          <footer className="bg-slate-950 border-t border-slate-800 px-6 py-2 flex items-center justify-between text-[11px] font-mono text-slate-400">
+            <span>BORDERGUARD DEFENSE MATRIX // CPU ONNX RUNTIME // 0 GPU REQUIREMENT</span>
+            <span className="text-cyan-400 font-bold">PROBLEM STATEMENT: SIH26187</span>
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
